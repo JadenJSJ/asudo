@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+
+set -uo pipefail
+
+prog=${0##*/}
+version=0.0.1
+tty_fd=
+session_dir=
+overlay_dir=
+socket_path=
+token=
+real_sudo=
+broker_pid=
+libexec_dir=
+broker_path=
+client_path=
+opened_ticket=0
+
+usage() {
+  cat >&2 <<EOF
+Usage: $prog [options] <command> [args...]
+       $prog -- <command> [args...]
+
+Options:
+  -h, --help     Show this help text
+  -v, --version  Show asudo version
+EOF
+}
+
+print_version() {
+  printf '%s %s\n' "$prog" "$version"
+}
+
+die() {
+  printf '%s: %s\n' "$prog" "$1" >&2
+  exit "${2:-1}"
+}
+
+close_tty() {
+  if [[ -n ${tty_fd:-} ]]; then
+    exec {tty_fd}<&-
+    exec {tty_fd}>&-
+    tty_fd=
+  fi
+}
+
+stop_broker() {
+  if [[ -n ${broker_pid:-} && -n ${socket_path:-} && -n ${token:-} && -x ${client_path:-} ]]; then
+    ASUDO_BROKER_SOCKET="$socket_path" \
+    ASUDO_SESSION_TOKEN="$token" \
+    "$client_path" --asudo-internal-stop >/dev/null 2>&1 || true
+    kill "$broker_pid" 2>/dev/null || true
+    wait "$broker_pid" 2>/dev/null || true
+    broker_pid=
+  fi
+}
+
+cleanup() {
+  local status=$?
+
+  trap - EXIT INT TERM HUP
+
+  close_tty
+  stop_broker
+
+  if [[ -n ${session_dir:-} ]]; then
+    rm -rf "$session_dir"
+  fi
+
+  if [[ ${opened_ticket:-0} -eq 1 && -n ${real_sudo:-} ]]; then
+    "$real_sudo" -k >/dev/null 2>&1 || true
+  fi
+
+  exit "$status"
+}
+
+resolve_libexec() {
+  local script_dir repo_libexec
+
+  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  repo_libexec=$(cd -- "$script_dir/.." && pwd)/libexec
+
+  if [[ -x $repo_libexec/asudo-broker.py && -x $repo_libexec/asudo-sudo-client.py ]]; then
+    libexec_dir=$repo_libexec
+  else
+    libexec_dir=/usr/lib/asudo
+  fi
+
+  broker_path=$libexec_dir/asudo-broker.py
+  client_path=$libexec_dir/asudo-sudo-client.py
+
+  [[ -x $broker_path ]] || die "broker helper not found: $broker_path" 127
+  [[ -x $client_path ]] || die "sudo client helper not found: $client_path" 127
+}
+
+make_session_dir() {
+  local runtime_dir=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}
+
+  session_dir=$(mktemp -d "$runtime_dir/asudo.XXXXXX")
+  overlay_dir=$session_dir/bin
+  socket_path=$session_dir/broker.sock
+  token=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+
+  mkdir -p "$overlay_dir"
+}
+
+install_overlay() {
+  cat >"$overlay_dir/sudo" <<EOF
+#!/usr/bin/env bash
+exec "$client_path" "\$@"
+EOF
+
+  chmod 700 "$overlay_dir/sudo"
+
+  export PATH="$overlay_dir:$PATH"
+  export ASUDO_BROKER_SOCKET="$socket_path"
+  export ASUDO_SESSION_TOKEN="$token"
+  export ASUDO_REAL_SUDO="$real_sudo"
+}
+
+ensure_auth() {
+  if "$real_sudo" -n true >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if ! exec {tty_fd}<>/dev/tty; then
+    die 'initial sudo authentication requires a terminal' 1
+  fi
+
+  "$real_sudo" -v <&"$tty_fd" || exit $?
+  opened_ticket=1
+  close_tty
+}
+
+start_broker() {
+  "$real_sudo" -- "$broker_path" \
+    --socket "$socket_path" \
+    --token "$token" \
+    --owner-uid "$(id -u)" &
+  broker_pid=$!
+
+  local i
+  for i in {1..50}; do
+    [[ -S $socket_path ]] && return 0
+    if ! kill -0 "$broker_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+
+  die 'broker failed to start' 1
+}
+
+while (( $# > 0 )); do
+  case $1 in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -v|--version)
+      print_version
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      die "unknown option: $1" 64
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if (( $# == 0 )); then
+  usage
+  exit 64
+fi
+
+if ! real_sudo=$(command -v sudo); then
+  die "'sudo' was not found in PATH" 127
+fi
+
+if [[ $1 == */* ]]; then
+  [[ -x $1 ]] || die "command is not executable: $1" 127
+else
+  command -v "$1" >/dev/null 2>&1 || die "command not found: $1" 127
+fi
+
+resolve_libexec
+make_session_dir
+trap cleanup EXIT INT TERM HUP
+install_overlay
+ensure_auth
+start_broker
+
+"$@"
+exit $?

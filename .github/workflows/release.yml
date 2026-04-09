@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          pacman -Syu --noconfirm git
+
+      - name: Read package version
+        id: version
+        shell: bash
+        run: |
+          pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
+          pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
+          short_sha="${GITHUB_SHA::7}"
+          tag="v${pkgver}-${pkgrel}-${short_sha}"
+          title="asudo ${pkgver}-${pkgrel} (${short_sha})"
+          printf 'pkgver=%s\n' "$pkgver" >> "$GITHUB_OUTPUT"
+          printf 'pkgrel=%s\n' "$pkgrel" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'title=%s\n' "$title" >> "$GITHUB_OUTPUT"
+
+      - name: Build release artifacts
+        shell: bash
+        run: |
+          workspace="$GITHUB_WORKSPACE"
+          mkdir -p dist
+          tarball="dist/asudo-${{ steps.version.outputs.pkgver }}.tar.gz"
+          git archive --format=tar.gz --output "$tarball" HEAD
+          useradd -m builder
+          chown -R builder:builder "$workspace"
+          runuser -u builder -- bash -lc "cd '$workspace' && makepkg --printsrcinfo > .SRCINFO && makepkg --force --noconfirm"
+          cp PKGBUILD .SRCINFO README.md LICENSE VERSION dist/
+          cp ./*.pkg.tar.* dist/
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.title }}
+          generate_release_notes: true
+          prerelease: false
+          files: |
+            dist/asudo-${{ steps.version.outputs.pkgver }}.tar.gz
+            dist/*.pkg.tar.*
+            dist/PKGBUILD
+            dist/.SRCINFO
+            dist/README.md
+            dist/LICENSE
+            dist/VERSION
