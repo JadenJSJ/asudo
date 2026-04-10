@@ -76,6 +76,7 @@ Shutdown flow:
 - If a password is needed, `asudo` asks once during startup.
 - The wrapped command stays attached to the current terminal.
 - Later `sudo` calls from fresh subprocesses go through the overlay and broker.
+- Root-side command lookup uses the caller's original `PATH`, so user-managed runtimes such as `fnm` still resolve correctly.
 - Validation checks such as `sudo -n -v` are handled inside the session.
 - Outside the launched session, system `sudo` behavior is unchanged.
 

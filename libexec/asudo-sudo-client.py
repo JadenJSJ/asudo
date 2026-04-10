@@ -3,6 +3,7 @@
 import array
 import json
 import os
+import shutil
 import signal
 import socket
 import sys
@@ -44,6 +45,27 @@ PASS_ENV = ("TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "T
 def die(message, code=1):
     print(f"sudo: {message}", file=sys.stderr)
     raise SystemExit(code)
+
+
+def effective_path(env_overrides):
+    return env_overrides.get("PATH") or os.environ.get("ASUDO_PARENT_PATH") or os.environ.get(
+        "PATH", ""
+    )
+
+
+def resolve_argv(argv, path):
+    if not argv:
+        return argv
+
+    command = argv[0]
+    if "/" in command:
+        return argv
+
+    resolved = shutil.which(command, path=path)
+    if not resolved:
+        die(f"{command}: command not found", 127)
+
+    return [resolved, *argv[1:]]
 
 
 def is_validate_only(argv):
@@ -97,10 +119,14 @@ def parse_exec(argv):
             return {"action": "validate"}
         die("a command is required", 2)
 
+    path = effective_path(env_overrides)
+    remainder = resolve_argv(remainder, path)
+
     return {
         "action": "exec",
         "argv": remainder,
         "cwd": os.getcwd(),
+        "path": path,
         "env_overrides": env_overrides,
         "passthrough_env": {
             key: value

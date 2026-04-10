@@ -13,7 +13,16 @@ import time
 
 
 DEFAULT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl"
-PASS_ENV = {"TERM", "COLORTERM", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ"}
+PASS_ENV = {
+    "PATH",
+    "TERM",
+    "COLORTERM",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "TZ",
+}
 
 
 def recv_request(conn: socket.socket):
@@ -49,7 +58,7 @@ def build_env(request):
         "HOME": "/root",
         "LOGNAME": "root",
         "USER": "root",
-        "PATH": DEFAULT_PATH,
+        "PATH": request.get("path") or DEFAULT_PATH,
     }
 
     for key, value in request.get("passthrough_env", {}).items():

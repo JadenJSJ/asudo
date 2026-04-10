@@ -105,6 +105,8 @@ make_session_dir() {
 }
 
 install_overlay() {
+  local parent_path=$PATH
+
   cat >"$overlay_dir/sudo" <<EOF
 #!/usr/bin/env bash
 exec "$client_path" "\$@"
@@ -112,6 +114,7 @@ EOF
 
   chmod 700 "$overlay_dir/sudo"
 
+  export ASUDO_PARENT_PATH="$parent_path"
   export PATH="$overlay_dir:$PATH"
   export ASUDO_BROKER_SOCKET="$socket_path"
   export ASUDO_SESSION_TOKEN="$token"
@@ -179,8 +182,11 @@ if (( $# == 0 )); then
   exit 64
 fi
 
-if ! real_sudo=$(command -v sudo); then
-  die "'sudo' was not found in PATH" 127
+real_sudo=${ASUDO_REAL_SUDO:-}
+if [[ -z $real_sudo ]]; then
+  if ! real_sudo=$(command -v sudo); then
+    die "'sudo' was not found in PATH" 127
+  fi
 fi
 
 if [[ $1 == */* ]]; then
